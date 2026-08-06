@@ -18,6 +18,9 @@ import {
   Lock,
   Sparkles,
   AlertCircle,
+  Paperclip,
+  X,
+  UploadCloud,
 } from "lucide-react";
 
 /* ------------------------------------------------------------------ */
@@ -47,9 +50,10 @@ const LEGAL_DRAFTING_CASE_STUDY = {
 const LEGAL_DRAFTING_QUESTIONS = [
   {
     id: "q1",
-    rows: 16,
+    rows: 10,
+    allowFileUpload: true,
     prompt:
-      "Draft an asylum statement based on the story of Diego Martinez Perez above. Ensure the chronology is coherent and the narrative flows logically. Structure the statement into four clear sections: Personal Background, Country Conditions Context, Persecution Facts, and Route Towards the U.S. The statement should not exceed 5 pages.",
+      "Draft an asylum statement based on the story of Diego Martinez Perez above. Ensure the chronology is coherent and the narrative flows logically. Structure the statement into four clear sections: Personal Background, Country Conditions Context, Persecution Facts, and Route Towards the U.S. The statement should not exceed 5 pages. Upload your drafted statement as a PDF or Word document below, or paste the text directly into the box.",
   },
   {
     id: "q2",
@@ -148,6 +152,23 @@ const EMPTY_FORM = {
 /* HELPERS                                                             */
 /* ------------------------------------------------------------------ */
 
+const MAX_FILE_SIZE_MB = 15;
+const ACCEPTED_FILE_TYPES =
+  ".pdf,.doc,.docx,application/pdf,application/msword,application/vnd.openxmlformats-officedocument.wordprocessingml.document";
+
+function readFileAsBase64(file) {
+  return new Promise((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onload = () => {
+      // reader.result looks like "data:application/pdf;base64,JVBERi0x..."
+      const base64 = String(reader.result).split(",")[1] || "";
+      resolve(base64);
+    };
+    reader.onerror = () => reject(new Error("Could not read file"));
+    reader.readAsDataURL(file);
+  });
+}
+
 function validateForm(form) {
   const errors = {};
   if (!form.firstName.trim()) errors.firstName = "First name is required.";
@@ -170,12 +191,15 @@ function validateForm(form) {
 }
 
 function buildEvaluationPrompt(app) {
-  const { role, form, answers } = app;
+  const { role, form, answers, files } = app;
   const qa = role.questions
-    .map(
-      (q, i) =>
-        `Q${i + 1}: ${q.prompt}\nA${i + 1}: ${answers[q.id]?.trim() || "(no answer provided)"}`
-    )
+    .map((q, i) => {
+      const fileNote =
+        files && files[q.id]
+          ? ` [Candidate attached a file: ${files[q.id].fileName} — see the "PDF Link" column in the Google Sheet to open it.]`
+          : "";
+      return `Q${i + 1}: ${q.prompt}\nA${i + 1}: ${answers[q.id]?.trim() || "(no answer provided)"}${fileNote}`;
+    })
     .join("\n\n");
 
   const caseStudyBlock = role.caseStudy
@@ -220,13 +244,21 @@ Then flag any notable strengths or red flags, and close with a hiring recommenda
  */
 const GOOGLE_SHEETS_ENDPOINT = "https://script.google.com/macros/s/AKfycbz9bzKrX6z9s5WG4fRv37I3ao0dhINFr0ORNkZM_Zh3PIO6YLB7J8oYXIRo1UzwTE3i/exec";
 
-function buildSheetPayload({ appId, status, role, form, answers }) {
+function buildSheetPayload({ appId, status, role, form, answers, files }) {
   const answersText = (role?.questions || [])
-    .map(
-      (q, i) =>
-        `Q${i + 1}: ${q.prompt}\nA${i + 1}: ${answers[q.id]?.trim() || ""}`
-    )
+    .map((q, i) => {
+      const fileNote = files && files[q.id] ? ` [file attached: ${files[q.id].fileName}]` : "";
+      return `Q${i + 1}: ${q.prompt}\nA${i + 1}: ${answers[q.id]?.trim() || ""}${fileNote}`;
+    })
     .join("\n\n");
+
+  // Only ever include the raw file bytes on final "Submitted" sends — not on
+  // every autosave tick — so we don't re-upload the same document to Drive
+  // over and over while the candidate is still typing other fields.
+  const fileForUpload =
+    status === "Submitted" && files && Object.keys(files).length > 0
+      ? Object.values(files)[0]
+      : null;
 
   return {
     applicationId: appId,
@@ -244,6 +276,13 @@ function buildSheetPayload({ appId, status, role, form, answers }) {
     answersText,
     answersJson: JSON.stringify(answers),
     clientTimestamp: new Date().toISOString(),
+    ...(fileForUpload
+      ? {
+          fileName: fileForUpload.fileName,
+          fileMimeType: fileForUpload.mimeType,
+          fileBase64: fileForUpload.base64,
+        }
+      : {}),
   };
 }
 
@@ -400,6 +439,8 @@ export default function App() {
   const [form, setForm] = useState(EMPTY_FORM);
   const [formErrors, setFormErrors] = useState({});
   const [answers, setAnswers] = useState({});
+  const [files, setFiles] = useState({}); // { [questionId]: { fileName, mimeType, base64, sizeMB } }
+  const [fileErrors, setFileErrors] = useState({});
   const [submittedApps, setSubmittedApps] = useState([]);
   const [lastAppId, setLastAppId] = useState(null);
 
@@ -428,6 +469,8 @@ export default function App() {
     setForm(EMPTY_FORM);
     setFormErrors({});
     setAnswers({});
+    setFiles({});
+    setFileErrors({});
     setStep("form");
     setTimeout(scrollTop, 50);
   };
@@ -442,10 +485,53 @@ export default function App() {
     }
   };
 
+  const handleFileSelect = async (questionId, file) => {
+    if (!file) return;
+    setFileErrors((prev) => ({ ...prev, [questionId]: null }));
+
+    const sizeMB = file.size / (1024 * 1024);
+    if (sizeMB > MAX_FILE_SIZE_MB) {
+      setFileErrors((prev) => ({
+        ...prev,
+        [questionId]: `That file is ${sizeMB.toFixed(1)} MB — please upload a file under ${MAX_FILE_SIZE_MB} MB.`,
+      }));
+      return;
+    }
+
+    try {
+      const base64 = await readFileAsBase64(file);
+      setFiles((prev) => ({
+        ...prev,
+        [questionId]: {
+          fileName: file.name,
+          mimeType: file.type || "application/octet-stream",
+          base64,
+          sizeMB: sizeMB.toFixed(1),
+        },
+      }));
+    } catch {
+      setFileErrors((prev) => ({
+        ...prev,
+        [questionId]: "Couldn't read that file — please try again.",
+      }));
+    }
+  };
+
+  const handleFileRemove = (questionId) => {
+    setFiles((prev) => {
+      const next = { ...prev };
+      delete next[questionId];
+      return next;
+    });
+    setFileErrors((prev) => ({ ...prev, [questionId]: null }));
+  };
+
   // Autosave: every change to the profile or assessment answers is synced
   // to the connected Google Sheet after ~1s of inactivity. This runs on
   // every keystroke, so even a candidate who never clicks "Submit" still
-  // has their in-progress answers safely recorded as "In progress".
+  // has their in-progress answers safely recorded as "In progress". File
+  // bytes are intentionally excluded here (see buildSheetPayload) — they're
+  // only uploaded to Drive once, at final submission.
   useEffect(() => {
     if (!selectedRole || !appId) return;
     if (step !== "form" && step !== "assessment") return;
@@ -454,7 +540,7 @@ export default function App() {
     if (syncTimerRef.current) clearTimeout(syncTimerRef.current);
     syncTimerRef.current = setTimeout(async () => {
       const ok = await postToSheet(
-        buildSheetPayload({ appId, status: "In progress", role: selectedRole, form, answers })
+        buildSheetPayload({ appId, status: "In progress", role: selectedRole, form, answers, files })
       );
       setSyncStatus(ok ? "saved" : "offline");
     }, 1000);
@@ -464,7 +550,11 @@ export default function App() {
   }, [form, answers, step, selectedRole, appId]);
 
   const allAnswered = selectedRole
-    ? selectedRole.questions.every((q) => (answers[q.id] || "").trim().length > 0)
+    ? selectedRole.questions.every((q) => {
+        const hasText = (answers[q.id] || "").trim().length > 0;
+        const hasFile = q.allowFileUpload && !!files[q.id];
+        return hasText || hasFile;
+      })
     : false;
 
   const handleAssessmentSubmit = async () => {
@@ -475,6 +565,7 @@ export default function App() {
       role: selectedRole,
       form,
       answers,
+      files,
       submittedAt: new Date(),
     };
     setSubmittedApps((prev) => [application, ...prev]);
@@ -483,7 +574,7 @@ export default function App() {
     if (syncTimerRef.current) clearTimeout(syncTimerRef.current);
     setSyncStatus("saving");
     const ok = await postToSheet(
-      buildSheetPayload({ appId: id, status: "Submitted", role: selectedRole, form, answers })
+      buildSheetPayload({ appId: id, status: "Submitted", role: selectedRole, form, answers, files })
     );
     setSyncStatus(ok ? "saved" : "offline");
 
@@ -498,6 +589,8 @@ export default function App() {
     setForm(EMPTY_FORM);
     setFormErrors({});
     setAnswers({});
+    setFiles({});
+    setFileErrors({});
     setAppId(null);
     setSyncStatus("idle");
     setTimeout(scrollTop, 50);
@@ -847,12 +940,60 @@ export default function App() {
                     <textarea
                       rows={q.rows || 4}
                       className="w-full rounded-lg border border-[#DDE1E8] px-3.5 py-2.5 text-[14px] text-[#0A1128] bg-white placeholder:text-[#A6ADBA] focus:outline-none focus:ring-2 focus:ring-[#0053FF]/40 focus:border-[#0053FF] resize-y"
-                      placeholder="Type your response here..."
+                      placeholder={
+                        q.allowFileUpload
+                          ? "You can paste your draft here, or attach a file below instead..."
+                          : "Type your response here..."
+                      }
                       value={answers[q.id] || ""}
                       onChange={(e) =>
                         setAnswers({ ...answers, [q.id]: e.target.value })
                       }
                     />
+
+                    {q.allowFileUpload && (
+                      <div className="mt-3">
+                        {!files[q.id] ? (
+                          <label className="flex items-center justify-center gap-2 rounded-lg border-2 border-dashed border-[#DDE1E8] bg-[#F7F8FA] px-4 py-4 text-[13.5px] text-[#5B6472] cursor-pointer hover:border-[#0053FF]/50 hover:bg-[#F0F4FF] transition-colors duration-150">
+                            <UploadCloud size={16} className="text-[#0053FF]" />
+                            Upload a PDF or Word document (max {MAX_FILE_SIZE_MB} MB)
+                            <input
+                              type="file"
+                              accept={ACCEPTED_FILE_TYPES}
+                              className="hidden"
+                              onChange={(e) =>
+                                handleFileSelect(q.id, e.target.files?.[0])
+                              }
+                            />
+                          </label>
+                        ) : (
+                          <div className="flex items-center justify-between gap-3 rounded-lg border border-[#BFF3FF] bg-[#EAFBFF] px-4 py-3">
+                            <div className="flex items-center gap-2 min-w-0 text-[13.5px] text-[#0A5A73]">
+                              <Paperclip size={15} className="shrink-0" />
+                              <span className="truncate font-medium">
+                                {files[q.id].fileName}
+                              </span>
+                              <span className="text-[#5B8A94] shrink-0">
+                                ({files[q.id].sizeMB} MB)
+                              </span>
+                            </div>
+                            <button
+                              type="button"
+                              onClick={() => handleFileRemove(q.id)}
+                              className="text-[#5B8A94] hover:text-[#D64545] shrink-0"
+                              aria-label="Remove file"
+                            >
+                              <X size={16} />
+                            </button>
+                          </div>
+                        )}
+                        {fileErrors[q.id] && (
+                          <span className="mt-1.5 flex items-center gap-1 text-[12px] text-[#D64545]">
+                            <AlertCircle size={12} /> {fileErrors[q.id]}
+                          </span>
+                        )}
+                      </div>
+                    )}
                   </div>
                 ))}
               </div>
