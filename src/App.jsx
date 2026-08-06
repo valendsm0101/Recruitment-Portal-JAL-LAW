@@ -21,6 +21,9 @@ import {
   Paperclip,
   X,
   UploadCloud,
+  RefreshCw,
+  Loader2,
+  WifiOff,
 } from "lucide-react";
 
 /* ------------------------------------------------------------------ */
@@ -244,6 +247,24 @@ Then flag any notable strengths or red flags, and close with a hiring recommenda
  */
 const GOOGLE_SHEETS_ENDPOINT = "https://script.google.com/macros/s/AKfycbz9bzKrX6z9s5WG4fRv37I3ao0dhINFr0ORNkZM_Zh3PIO6YLB7J8oYXIRo1UzwTE3i/exec";
 
+/**
+ * Must match RECRUITER_ACCESS_KEY exactly inside google-apps-script-sync.gs.
+ * This is a basic safeguard, not real security — see the security note in
+ * that file for what it does and doesn't protect against.
+ */
+const RECRUITER_ACCESS_KEY = "jal-xVGoq9ZgcQcL86BKk7CwRKRG";
+
+/**
+ * Password typed into the "Recruiter access" prompt to unlock the panel in
+ * the UI. Change this to a private phrase only you (and anyone you choose
+ * to share it with) know. Like RECRUITER_ACCESS_KEY above, this lives in
+ * the site's public code — a technically determined person could find it
+ * by reading the page's source. What it DOES stop is any casual visitor,
+ * candidate, or search engine from opening the panel just by clicking the
+ * link, which is the realistic risk for a tool like this.
+ */
+const RECRUITER_PASSWORD = "JALLaw2026!";
+
 function buildSheetPayload({ appId, status, role, form, answers, files }) {
   const answersText = (role?.questions || [])
     .map((q, i) => {
@@ -284,6 +305,74 @@ function buildSheetPayload({ appId, status, role, form, answers, files }) {
         }
       : {}),
   };
+}
+
+/**
+ * Pulls every row back from the Google Sheet via doGet(), so the recruiter
+ * panel shows ALL applications (any day, any browser session) instead of
+ * only what happened in the current tab.
+ *
+ * Note: unlike postToSheet (which fires blind with mode:"no-cors" because we
+ * don't need to read the response), this DOES need to read the response —
+ * so it depends on the Apps Script Web App returning a readable, CORS-
+ * friendly response. That has been inconsistent across Google's own
+ * platform changes over time. If it fails, we surface a clear error instead
+ * of a silent blank list, and the Google Sheet itself always remains the
+ * reliable source of truth regardless.
+ */
+async function fetchApplicationsFromSheet() {
+  if (!GOOGLE_SHEETS_ENDPOINT || GOOGLE_SHEETS_ENDPOINT.includes("PASTE_YOUR")) {
+    return { ok: false, reason: "not_configured" };
+  }
+  try {
+    const url = `${GOOGLE_SHEETS_ENDPOINT}?key=${encodeURIComponent(RECRUITER_ACCESS_KEY)}`;
+    const res = await fetch(url, { method: "GET" });
+    if (!res.ok) {
+      return { ok: false, reason: "http_error", detail: `HTTP ${res.status}` };
+    }
+    const data = await res.json();
+    if (!data.ok) {
+      return { ok: false, reason: data.error === "unauthorized" ? "unauthorized" : "server_error", detail: data.error };
+    }
+    return { ok: true, applications: data.applications || [] };
+  } catch (err) {
+    return { ok: false, reason: "network_or_cors", detail: String(err) };
+  }
+}
+
+function buildEvaluationPromptFromSheetRow(row) {
+  const roleDef = ROLES.find((r) => r.title === row.role);
+  const caseStudyBlock = roleDef?.caseStudy
+    ? `\nCLIENT STORY PROVIDED TO THE CANDIDATE — ${roleDef.caseStudy.clientName}\n${roleDef.caseStudy.story.join("\n\n")}\n`
+    : "";
+  const fileNote = row.pdfLink ? `\nAttached file: ${row.pdfLink}\n` : "";
+
+  return `You are a senior legal recruiter at JAL LAW Group evaluating a candidate for the ${row.role} position (${row.department}).
+
+CANDIDATE PROFILE
+- Name: ${row.firstName} ${row.lastName}
+- Phone: ${row.phone}
+- Email: ${row.email}
+- Self-reported English proficiency: ${row.englishLevel}
+- Self-reported AI tool experience: ${row.aiExperience}
+- Remote work availability: ${row.remoteAvailability}
+- Owns a personal laptop/computer: ${row.ownDevice}
+
+ROLE APPLIED FOR
+${row.role} — ${row.department}
+${caseStudyBlock}
+CASE ASSESSMENT — CANDIDATE RESPONSES
+${row.answersText || "(no answers recorded)"}
+${fileNote}
+EVALUATION INSTRUCTIONS
+Score the candidate from 1-5 (5 = excellent) on each of the following, with one sentence of justification per score:
+1. Written communication clarity and professionalism
+2. Legal/business reasoning demonstrated in the responses
+3. English proficiency evidenced in the writing itself (compare against the self-reported level above)
+4. Attention to detail and completeness of the responses
+5. Overall fit for the ${row.role} role at a legal services firm
+
+Then flag any notable strengths or red flags, and close with a hiring recommendation of Strong Yes, Yes, Maybe, or No, with a one-sentence rationale.`;
 }
 
 async function postToSheet(payload) {
@@ -449,9 +538,16 @@ export default function App() {
   const syncTimerRef = useRef(null);
 
   const [recruiterOpen, setRecruiterOpen] = useState(false);
+  const [recruiterUnlocked, setRecruiterUnlocked] = useState(false);
+  const [recruiterPasswordInput, setRecruiterPasswordInput] = useState("");
+  const [recruiterAuthError, setRecruiterAuthError] = useState(false);
   const [evalAppId, setEvalAppId] = useState(null);
   const [copied, setCopied] = useState(false);
   const topRef = useRef(null);
+
+  const [sheetApps, setSheetApps] = useState([]);
+  const [sheetFetchState, setSheetFetchState] = useState("idle"); // idle | loading | loaded | error
+  const [sheetFetchReason, setSheetFetchReason] = useState(null);
 
   const selectedRole = useMemo(
     () => ROLES.find((r) => r.id === selectedRoleId) || null,
@@ -606,7 +702,76 @@ export default function App() {
     }
   };
 
-  const evalApp = submittedApps.find((a) => a.id === evalAppId) || null;
+  const loadSheetApplications = async () => {
+    setSheetFetchState("loading");
+    const result = await fetchApplicationsFromSheet();
+    if (result.ok) {
+      setSheetApps(result.applications);
+      setSheetFetchState("loaded");
+      setSheetFetchReason(null);
+    } else {
+      setSheetFetchState("error");
+      setSheetFetchReason(result.reason || "unknown");
+    }
+  };
+
+  // Pull fresh data from the Google Sheet only once the recruiter has
+  // unlocked the panel with the password — never before, so no candidate
+  // data is fetched or rendered for an unauthenticated visitor.
+  useEffect(() => {
+    if (recruiterOpen && recruiterUnlocked) {
+      loadSheetApplications();
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [recruiterOpen, recruiterUnlocked]);
+
+  const handleRecruiterToggle = () => {
+    setRecruiterOpen((v) => {
+      const next = !v;
+      if (!next) {
+        // Closing the panel also re-locks it, so it's never left open and
+        // unlocked in the background for the next visitor on a shared
+        // computer.
+        setRecruiterUnlocked(false);
+        setRecruiterPasswordInput("");
+        setRecruiterAuthError(false);
+      }
+      return next;
+    });
+  };
+
+  const handleRecruiterUnlock = (e) => {
+    e.preventDefault();
+    if (recruiterPasswordInput === RECRUITER_PASSWORD) {
+      setRecruiterUnlocked(true);
+      setRecruiterAuthError(false);
+      setRecruiterPasswordInput("");
+    } else {
+      setRecruiterAuthError(true);
+    }
+  };
+
+  const usingSheetData = sheetFetchState === "loaded";
+
+  // Normalize both data sources (live Sheet rows, or this session's local
+  // state as a fallback) into one consistent shape for rendering.
+  const displayApps = usingSheetData
+    ? sheetApps.map((row) => ({
+        id: row.applicationId,
+        name: `${row.firstName || ""} ${row.lastName || ""}`.trim() || "(no name)",
+        roleTitle: row.role || "—",
+        statusLabel: row.status || "Unknown",
+        promptText: buildEvaluationPromptFromSheetRow(row),
+      }))
+    : submittedApps.map((app) => ({
+        id: app.id,
+        name: `${app.form.firstName} ${app.form.lastName}`,
+        roleTitle: app.role.title,
+        statusLabel: "Submitted",
+        promptText: buildEvaluationPrompt(app),
+      }));
+
+  const evalApp = displayApps.find((a) => a.id === evalAppId) || null;
 
   return (
     <div
@@ -1056,7 +1221,7 @@ export default function App() {
             © {new Date().getFullYear()} JAL LAW Group — ZA · LPL · GLA
           </span>
           <button
-            onClick={() => setRecruiterOpen((v) => !v)}
+            onClick={handleRecruiterToggle}
             className="flex items-center gap-1.5 text-[12.5px] text-[#8891A0] hover:text-[#0053FF] transition-colors"
           >
             <Lock size={12} /> Recruiter access
@@ -1068,91 +1233,181 @@ export default function App() {
       {recruiterOpen && (
         <div className="border-t-[3px] border-[#00FF6C] bg-[#0053FF]">
           <div className="max-w-5xl mx-auto px-5 sm:px-8 py-8">
-            <div className="flex items-center gap-2 mb-1">
-              <ShieldCheck size={16} className="text-[#00FFD2]" />
-              <span
-                className="text-[11px] uppercase tracking-[0.18em] text-[#00FFD2] font-medium"
-                style={{ fontFamily: "'IBM Plex Mono', monospace" }}
-              >
-                For internal use only
-              </span>
+            <div className="flex items-center justify-between gap-3 mb-1">
+              <div className="flex items-center gap-2">
+                <ShieldCheck size={16} className="text-[#00FFD2]" />
+                <span
+                  className="text-[11px] uppercase tracking-[0.18em] text-[#00FFD2] font-medium"
+                  style={{ fontFamily: "'IBM Plex Mono', monospace" }}
+                >
+                  For internal use only
+                </span>
+              </div>
+              {recruiterUnlocked && (
+                <button
+                  onClick={loadSheetApplications}
+                  disabled={sheetFetchState === "loading"}
+                  className="flex items-center gap-1.5 text-[12.5px] font-medium text-white/80 hover:text-white transition-colors disabled:opacity-60"
+                >
+                  {sheetFetchState === "loading" ? (
+                    <Loader2 size={13} className="animate-spin" />
+                  ) : (
+                    <RefreshCw size={13} />
+                  )}
+                  Refresh
+                </button>
+              )}
             </div>
             <h3 className="text-[19px] font-bold text-white mb-1">
               Recruiter Evaluation Tool
             </h3>
-            <p className="text-[13.5px] text-white/75 mb-2 max-w-xl">
-              Every keystroke on the candidate profile and case assessment is synced to
-              the connected Google Sheet — including applications that were never
-              finished — so nothing is lost if a candidate closes the tab midway. The
-              list below only shows applications completed in this browser session.
-            </p>
-            <p className="text-[13.5px] text-white/75 mb-6 max-w-xl">
-              Generate a structured evaluation prompt for any candidate below, then copy
-              it into your AI assistant of choice for an instant, structured assessment.
-            </p>
 
-            {submittedApps.length === 0 ? (
-              <div className="rounded-lg border border-dashed border-white/25 px-5 py-8 text-center text-[13.5px] text-white/70">
-                No applications submitted yet this session.
+            {!recruiterUnlocked ? (
+              <div className="max-w-sm">
+                <p className="text-[13.5px] text-white/75 mb-4">
+                  Enter the recruiter password to view candidate data.
+                </p>
+                <form onSubmit={handleRecruiterUnlock} className="space-y-3">
+                  <div className="relative">
+                    <Lock
+                      size={14}
+                      className="absolute left-3 top-1/2 -translate-y-1/2 text-white/50"
+                    />
+                    <input
+                      type="password"
+                      autoFocus
+                      value={recruiterPasswordInput}
+                      onChange={(e) => {
+                        setRecruiterPasswordInput(e.target.value);
+                        setRecruiterAuthError(false);
+                      }}
+                      placeholder="Password"
+                      className="w-full rounded-lg border border-white/25 bg-white/10 pl-9 pr-3.5 py-2.5 text-[14px] text-white placeholder:text-white/40 focus:outline-none focus:ring-2 focus:ring-[#00FFD2]/50 focus:border-[#00FFD2]"
+                    />
+                  </div>
+                  {recruiterAuthError && (
+                    <span className="flex items-center gap-1 text-[12.5px] text-[#FFB4B4]">
+                      <AlertCircle size={12} /> That password isn't right — try again.
+                    </span>
+                  )}
+                  <button
+                    type="submit"
+                    className="w-full flex items-center justify-center gap-1.5 rounded-lg bg-[#00FFD2] text-[#0A1128] text-[13.5px] font-semibold py-2.5 hover:bg-white transition-colors duration-200"
+                  >
+                    Unlock
+                  </button>
+                </form>
               </div>
             ) : (
-              <div className="space-y-3">
-                {submittedApps.map((app) => (
-                  <div key={app.id}>
-                    <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 bg-white/10 border border-white/15 rounded-lg px-4 py-3.5">
-                      <div className="flex items-center gap-3 min-w-0">
-                        <div className="w-9 h-9 rounded-md bg-white/15 flex items-center justify-center shrink-0">
-                          <Briefcase size={16} className="text-white" />
-                        </div>
-                        <div className="min-w-0">
-                          <div className="text-[14px] font-semibold text-white truncate">
-                            {app.form.firstName} {app.form.lastName}
-                          </div>
-                          <div className="text-[12.5px] text-white/70 truncate">
-                            {app.role.title} · {app.id}
-                          </div>
-                        </div>
-                      </div>
-                      <button
-                        onClick={() => {
-                          setEvalAppId(evalAppId === app.id ? null : app.id);
-                          setCopied(false);
-                        }}
-                        className="flex items-center justify-center gap-1.5 rounded-lg bg-[#00FFD2] text-[#0A1128] text-[13px] font-semibold px-4 py-2 hover:bg-white transition-colors duration-200 shrink-0"
-                      >
-                        <Sparkles size={14} />
-                        {evalAppId === app.id ? "Hide prompt" : "Generate evaluation prompt"}
-                      </button>
-                    </div>
+              <>
+                {usingSheetData ? (
+                  <p className="text-[13.5px] text-white/75 mb-2 max-w-xl">
+                    Showing every application recorded in your Google Sheet — submitted
+                    or still in progress, from any day, any device.
+                  </p>
+                ) : sheetFetchState === "loading" ? (
+                  <p className="text-[13.5px] text-white/75 mb-2 max-w-xl flex items-center gap-1.5">
+                    <Loader2 size={13} className="animate-spin" /> Loading applications
+                    from your Google Sheet…
+                  </p>
+                ) : (
+                  <div className="flex items-start gap-2 rounded-lg bg-white/10 border border-white/20 px-4 py-3 mb-2 max-w-xl">
+                    <WifiOff size={15} className="text-[#FFD866] mt-0.5 shrink-0" />
+                    <p className="text-[13px] text-white/85 leading-relaxed">
+                      Couldn't load live data from your Google Sheet
+                      {sheetFetchReason === "unauthorized"
+                        ? " (access key didn't match — check RECRUITER_ACCESS_KEY in both files)."
+                        : sheetFetchReason === "not_configured"
+                        ? " (no Sheet connected yet)."
+                        : " (likely a browser CORS restriction)."}{" "}
+                      Showing this browser session's applications instead. Your Google
+                      Sheet itself still has everything — open it directly if you need
+                      the full history right now.
+                    </p>
+                  </div>
+                )}
 
-                    {evalAppId === app.id && (
-                      <div className="mt-2 rounded-lg bg-[#031A57] border border-white/15 p-4">
-                        <div className="flex items-center justify-between mb-2.5">
-                          <span
-                            className="text-[11px] uppercase tracking-wider text-white/60"
-                            style={{ fontFamily: "'IBM Plex Mono', monospace" }}
-                          >
-                            Evaluation prompt — ready to copy
-                          </span>
+                <p className="text-[13.5px] text-white/75 mb-6 max-w-xl">
+                  Generate a structured evaluation prompt for any candidate below, then
+                  copy it into your AI assistant of choice for an instant, structured
+                  assessment.
+                </p>
+
+                {displayApps.length === 0 ? (
+                  <div className="rounded-lg border border-dashed border-white/25 px-5 py-8 text-center text-[13.5px] text-white/70">
+                    {sheetFetchState === "loading"
+                      ? "Loading…"
+                      : "No applications found yet."}
+                  </div>
+                ) : (
+                  <div className="space-y-3">
+                    {displayApps.map((app) => (
+                      <div key={app.id}>
+                        <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 bg-white/10 border border-white/15 rounded-lg px-4 py-3.5">
+                          <div className="flex items-center gap-3 min-w-0">
+                            <div className="w-9 h-9 rounded-md bg-white/15 flex items-center justify-center shrink-0">
+                              <Briefcase size={16} className="text-white" />
+                            </div>
+                            <div className="min-w-0">
+                              <div className="text-[14px] font-semibold text-white truncate">
+                                {app.name}
+                              </div>
+                              <div className="text-[12.5px] text-white/70 truncate">
+                                {app.roleTitle} · {app.id} ·{" "}
+                                <span
+                                  className={
+                                    app.statusLabel === "Submitted"
+                                      ? "text-[#00FFD2]"
+                                      : "text-[#FFD866]"
+                                  }
+                                >
+                                  {app.statusLabel}
+                                </span>
+                              </div>
+                            </div>
+                          </div>
                           <button
-                            onClick={() => handleCopy(buildEvaluationPrompt(app))}
-                            className="flex items-center gap-1.5 text-[12.5px] font-medium text-[#00FFD2] hover:text-white transition-colors"
+                            onClick={() => {
+                              setEvalAppId(evalAppId === app.id ? null : app.id);
+                              setCopied(false);
+                            }}
+                            className="flex items-center justify-center gap-1.5 rounded-lg bg-[#00FFD2] text-[#0A1128] text-[13px] font-semibold px-4 py-2 hover:bg-white transition-colors duration-200 shrink-0"
                           >
-                            {copied ? <Check size={14} /> : <Copy size={14} />}
-                            {copied ? "Copied" : "Copy"}
+                            <Sparkles size={14} />
+                            {evalAppId === app.id ? "Hide prompt" : "Generate evaluation prompt"}
                           </button>
                         </div>
-                        <pre
-                          className="text-[12.5px] text-white/85 whitespace-pre-wrap leading-relaxed max-h-72 overflow-y-auto pr-1"
-                          style={{ fontFamily: "'IBM Plex Mono', monospace" }}
-                        >
-                          {buildEvaluationPrompt(app)}
-                        </pre>
+
+                        {evalAppId === app.id && (
+                          <div className="mt-2 rounded-lg bg-[#031A57] border border-white/15 p-4">
+                            <div className="flex items-center justify-between mb-2.5">
+                              <span
+                                className="text-[11px] uppercase tracking-wider text-white/60"
+                                style={{ fontFamily: "'IBM Plex Mono', monospace" }}
+                              >
+                                Evaluation prompt — ready to copy
+                              </span>
+                              <button
+                                onClick={() => handleCopy(app.promptText)}
+                                className="flex items-center gap-1.5 text-[12.5px] font-medium text-[#00FFD2] hover:text-white transition-colors"
+                              >
+                                {copied ? <Check size={14} /> : <Copy size={14} />}
+                                {copied ? "Copied" : "Copy"}
+                              </button>
+                            </div>
+                            <pre
+                              className="text-[12.5px] text-white/85 whitespace-pre-wrap leading-relaxed max-h-72 overflow-y-auto pr-1"
+                              style={{ fontFamily: "'IBM Plex Mono', monospace" }}
+                            >
+                              {app.promptText}
+                            </pre>
+                          </div>
+                        )}
                       </div>
-                    )}
+                    ))}
                   </div>
-                ))}
-              </div>
+                )}
+              </>
             )}
           </div>
         </div>
