@@ -73,6 +73,7 @@ const ROLES = [
     department: "Immigration Case Management",
     location: "Remote",
     commitment: "Full-time",
+    estimatedMinutes: 45,
     blurb:
       "Lead immigration cases from start to finish — auditing digital case files, coordinating processes, and managing case communication with strategic legal judgment.",
     requirements: [
@@ -91,6 +92,7 @@ const ROLES = [
     department: "Firm Operations",
     location: "Remote",
     commitment: "Full-time",
+    estimatedMinutes: 15,
     blurb:
       "Represent the firm with excellence and provide key support for daily operations — logistics coordination, administrative management, and corporate hospitality.",
     requirements: [
@@ -119,6 +121,7 @@ const ROLES = [
     department: "Immigration Case Management",
     location: "Remote",
     commitment: "Internship",
+    estimatedMinutes: 45,
     blurb:
       "Support the case management team with research, document review, and case file organization while gaining hands-on experience in immigration law practice.",
     requirements: [
@@ -143,6 +146,8 @@ const EXHIBITS = [
 const EMPTY_FORM = {
   firstName: "",
   lastName: "",
+  phoneCountry: "",
+  phoneCountryCustom: "",
   phone: "",
   email: "",
   englishLevel: "",
@@ -172,14 +177,153 @@ function readFileAsBase64(file) {
   });
 }
 
+/**
+ * Converts an ISO 3166-1 alpha-2 code (e.g. "US") into its flag emoji by
+ * mapping each letter to a Unicode regional indicator symbol.
+ */
+function isoToFlagEmoji(iso2) {
+  if (!iso2 || iso2.length !== 2) return "🌐";
+  return iso2
+    .toUpperCase()
+    .replace(/./g, (char) => String.fromCodePoint(127397 + char.charCodeAt(0)));
+}
+
+// A practical set of countries covering the Americas, Europe, and other
+// major regions candidates are likely to apply from. Not the full ISO list —
+// easy to extend by adding { name, iso2, dial } entries.
+const COUNTRY_CODES = [
+  { name: "United States", iso2: "US", dial: "+1" },
+  { name: "Canada", iso2: "CA", dial: "+1" },
+  { name: "Mexico", iso2: "MX", dial: "+52" },
+  { name: "Belize", iso2: "BZ", dial: "+501" },
+  { name: "Guatemala", iso2: "GT", dial: "+502" },
+  { name: "El Salvador", iso2: "SV", dial: "+503" },
+  { name: "Honduras", iso2: "HN", dial: "+504" },
+  { name: "Nicaragua", iso2: "NI", dial: "+505" },
+  { name: "Costa Rica", iso2: "CR", dial: "+506" },
+  { name: "Panama", iso2: "PA", dial: "+507" },
+  { name: "Cuba", iso2: "CU", dial: "+53" },
+  { name: "Dominican Republic", iso2: "DO", dial: "+1" },
+  { name: "Haiti", iso2: "HT", dial: "+509" },
+  { name: "Jamaica", iso2: "JM", dial: "+1" },
+  { name: "Puerto Rico", iso2: "PR", dial: "+1" },
+  { name: "Trinidad and Tobago", iso2: "TT", dial: "+1" },
+  { name: "Colombia", iso2: "CO", dial: "+57" },
+  { name: "Venezuela", iso2: "VE", dial: "+58" },
+  { name: "Ecuador", iso2: "EC", dial: "+593" },
+  { name: "Peru", iso2: "PE", dial: "+51" },
+  { name: "Bolivia", iso2: "BO", dial: "+591" },
+  { name: "Chile", iso2: "CL", dial: "+56" },
+  { name: "Argentina", iso2: "AR", dial: "+54" },
+  { name: "Uruguay", iso2: "UY", dial: "+598" },
+  { name: "Paraguay", iso2: "PY", dial: "+595" },
+  { name: "Brazil", iso2: "BR", dial: "+55" },
+  { name: "Guyana", iso2: "GY", dial: "+592" },
+  { name: "Suriname", iso2: "SR", dial: "+597" },
+  { name: "Spain", iso2: "ES", dial: "+34" },
+  { name: "Portugal", iso2: "PT", dial: "+351" },
+  { name: "France", iso2: "FR", dial: "+33" },
+  { name: "Germany", iso2: "DE", dial: "+49" },
+  { name: "Italy", iso2: "IT", dial: "+39" },
+  { name: "United Kingdom", iso2: "GB", dial: "+44" },
+  { name: "Ireland", iso2: "IE", dial: "+353" },
+  { name: "Netherlands", iso2: "NL", dial: "+31" },
+  { name: "Belgium", iso2: "BE", dial: "+32" },
+  { name: "Switzerland", iso2: "CH", dial: "+41" },
+  { name: "Austria", iso2: "AT", dial: "+43" },
+  { name: "Sweden", iso2: "SE", dial: "+46" },
+  { name: "Norway", iso2: "NO", dial: "+47" },
+  { name: "Denmark", iso2: "DK", dial: "+45" },
+  { name: "Finland", iso2: "FI", dial: "+358" },
+  { name: "Poland", iso2: "PL", dial: "+48" },
+  { name: "Romania", iso2: "RO", dial: "+40" },
+  { name: "Greece", iso2: "GR", dial: "+30" },
+  { name: "Russia", iso2: "RU", dial: "+7" },
+  { name: "Ukraine", iso2: "UA", dial: "+380" },
+  { name: "China", iso2: "CN", dial: "+86" },
+  { name: "India", iso2: "IN", dial: "+91" },
+  { name: "Japan", iso2: "JP", dial: "+81" },
+  { name: "South Korea", iso2: "KR", dial: "+82" },
+  { name: "Philippines", iso2: "PH", dial: "+63" },
+  { name: "Vietnam", iso2: "VN", dial: "+84" },
+  { name: "Indonesia", iso2: "ID", dial: "+62" },
+  { name: "Nigeria", iso2: "NG", dial: "+234" },
+  { name: "South Africa", iso2: "ZA", dial: "+27" },
+  { name: "Egypt", iso2: "EG", dial: "+20" },
+  { name: "Kenya", iso2: "KE", dial: "+254" },
+  { name: "Ghana", iso2: "GH", dial: "+233" },
+  { name: "Ethiopia", iso2: "ET", dial: "+251" },
+  { name: "Morocco", iso2: "MA", dial: "+212" },
+  { name: "Algeria", iso2: "DZ", dial: "+213" },
+  { name: "Tunisia", iso2: "TN", dial: "+216" },
+  { name: "Senegal", iso2: "SN", dial: "+221" },
+  { name: "Ivory Coast", iso2: "CI", dial: "+225" },
+  { name: "Cameroon", iso2: "CM", dial: "+237" },
+  { name: "Democratic Republic of the Congo", iso2: "CD", dial: "+243" },
+  { name: "Angola", iso2: "AO", dial: "+244" },
+  { name: "Mozambique", iso2: "MZ", dial: "+258" },
+  { name: "Zambia", iso2: "ZM", dial: "+260" },
+  { name: "Zimbabwe", iso2: "ZW", dial: "+263" },
+  { name: "Tanzania", iso2: "TZ", dial: "+255" },
+  { name: "Uganda", iso2: "UG", dial: "+256" },
+  { name: "Rwanda", iso2: "RW", dial: "+250" },
+  { name: "Sudan", iso2: "SD", dial: "+249" },
+  { name: "Libya", iso2: "LY", dial: "+218" },
+  { name: "Cape Verde", iso2: "CV", dial: "+238" },
+  { name: "Australia", iso2: "AU", dial: "+61" },
+  { name: "New Zealand", iso2: "NZ", dial: "+64" },
+  { name: "Saudi Arabia", iso2: "SA", dial: "+966" },
+  { name: "United Arab Emirates", iso2: "AE", dial: "+971" },
+  { name: "Turkey", iso2: "TR", dial: "+90" },
+  { name: "Israel", iso2: "IL", dial: "+972" },
+  { name: "Pakistan", iso2: "PK", dial: "+92" },
+  { name: "Bangladesh", iso2: "BD", dial: "+880" },
+].sort((a, b) => a.name.localeCompare(b.name));
+
+// Shown at the end of the dropdown for any country not explicitly listed
+// above — lets the candidate type their own code by hand instead of being
+// blocked from applying.
+const OTHER_COUNTRY_OPTION = { name: "Other (enter code manually)", iso2: "🌐", dial: "OTHER" };
+
+/**
+ * Best-effort IP-based geolocation, used to (a) default the phone country
+ * code and (b) silently record the candidate's approximate country/city for
+ * the recruiter's records. If the request fails or is blocked, the app
+ * simply falls back to a default dial code and leaves location blank —
+ * nothing about the form breaks either way.
+ */
+async function detectGeo() {
+  try {
+    const res = await fetch("https://ipapi.co/json/");
+    if (!res.ok) return null;
+    const data = await res.json();
+    return {
+      dial: data.country_calling_code || "",
+      iso2: data.country_code || "",
+      country: data.country_name || "",
+      city: data.city || "",
+    };
+  } catch {
+    return null;
+  }
+}
+
+function getEffectiveDialCode(form) {
+  return form.phoneCountry === "OTHER" ? form.phoneCountryCustom.trim() : form.phoneCountry;
+}
+
 function validateForm(form) {
   const errors = {};
   if (!form.firstName.trim()) errors.firstName = "First name is required.";
   if (!form.lastName.trim()) errors.lastName = "Last name is required.";
-  if (!form.phone.trim()) {
+  if (!form.phoneCountry) {
+    errors.phone = "Select a country code.";
+  } else if (form.phoneCountry === "OTHER" && !/^\+\d{1,4}$/.test(form.phoneCountryCustom.trim())) {
+    errors.phone = "Enter your country code as + followed by digits (e.g. +255).";
+  } else if (!form.phone.trim()) {
     errors.phone = "Phone number is required.";
-  } else if (!/^[\d\s()+-]{7,}$/.test(form.phone.trim())) {
-    errors.phone = "Enter a valid phone number.";
+  } else if (!/^\d{6,14}$/.test(form.phone.trim())) {
+    errors.phone = "Enter a valid phone number (digits only).";
   }
   if (!form.email.trim()) {
     errors.email = "Email address is required.";
@@ -194,7 +338,7 @@ function validateForm(form) {
 }
 
 function buildEvaluationPrompt(app) {
-  const { role, form, answers, files } = app;
+  const { role, form, answers, files, geo } = app;
   const qa = role.questions
     .map((q, i) => {
       const fileNote =
@@ -209,13 +353,18 @@ function buildEvaluationPrompt(app) {
     ? `\nCLIENT STORY PROVIDED TO THE CANDIDATE — ${role.caseStudy.clientName}\n${role.caseStudy.story.join("\n\n")}\n`
     : "";
 
+  const locationLine =
+    geo && (geo.city || geo.country)
+      ? `- Approximate location (detected): ${[geo.city, geo.country].filter(Boolean).join(", ")}\n`
+      : "";
+
   return `You are a senior legal recruiter at JAL LAW Group evaluating a candidate for the ${role.title} position (${role.department}).
 
 CANDIDATE PROFILE
 - Name: ${form.firstName} ${form.lastName}
-- Phone: ${form.phone}
+- Phone: ${getEffectiveDialCode(form)} ${form.phone}
 - Email: ${form.email}
-- Self-reported English proficiency: ${form.englishLevel}
+${locationLine}- Self-reported English proficiency: ${form.englishLevel}
 - Self-reported AI tool experience: ${form.aiExperience}
 - Remote work availability: ${form.remoteAvailable}
 - Owns a personal laptop/computer: ${form.ownDevice}
@@ -265,7 +414,7 @@ const RECRUITER_ACCESS_KEY = "jal-xVGoq9ZgcQcL86BKk7CwRKRG";
  */
 const RECRUITER_PASSWORD = "JALLaw2026!";
 
-function buildSheetPayload({ appId, status, role, form, answers, files }) {
+function buildSheetPayload({ appId, status, role, form, answers, files, geo }) {
   const answersText = (role?.questions || [])
     .map((q, i) => {
       const fileNote = files && files[q.id] ? ` [file attached: ${files[q.id].fileName}]` : "";
@@ -288,8 +437,10 @@ function buildSheetPayload({ appId, status, role, form, answers, files }) {
     department: role?.department || "",
     firstName: form.firstName,
     lastName: form.lastName,
-    phone: form.phone,
+    phone: `${getEffectiveDialCode(form)} ${form.phone}`.trim(),
     email: form.email,
+    country: geo?.country || "",
+    city: geo?.city || "",
     englishLevel: form.englishLevel,
     aiExperience: form.aiExperience,
     remoteAvailable: form.remoteAvailable,
@@ -346,6 +497,10 @@ function buildEvaluationPromptFromSheetRow(row) {
     ? `\nCLIENT STORY PROVIDED TO THE CANDIDATE — ${roleDef.caseStudy.clientName}\n${roleDef.caseStudy.story.join("\n\n")}\n`
     : "";
   const fileNote = row.pdfLink ? `\nAttached file: ${row.pdfLink}\n` : "";
+  const locationLine =
+    row.city || row.country
+      ? `- Approximate location (detected): ${[row.city, row.country].filter(Boolean).join(", ")}\n`
+      : "";
 
   return `You are a senior legal recruiter at JAL LAW Group evaluating a candidate for the ${row.role} position (${row.department}).
 
@@ -353,7 +508,7 @@ CANDIDATE PROFILE
 - Name: ${row.firstName} ${row.lastName}
 - Phone: ${row.phone}
 - Email: ${row.email}
-- Self-reported English proficiency: ${row.englishLevel}
+${locationLine}- Self-reported English proficiency: ${row.englishLevel}
 - Self-reported AI tool experience: ${row.aiExperience}
 - Remote work availability: ${row.remoteAvailability}
 - Owns a personal laptop/computer: ${row.ownDevice}
@@ -549,6 +704,9 @@ export default function App() {
   const [sheetFetchState, setSheetFetchState] = useState("idle"); // idle | loading | loaded | error
   const [sheetFetchReason, setSheetFetchReason] = useState(null);
 
+  const [geo, setGeo] = useState({ dial: "", iso2: "", country: "", city: "" });
+  const [assessmentStarted, setAssessmentStarted] = useState(false);
+
   const selectedRole = useMemo(
     () => ROLES.find((r) => r.id === selectedRoleId) || null,
     [selectedRoleId]
@@ -558,15 +716,39 @@ export default function App() {
     if (topRef.current) topRef.current.scrollIntoView({ behavior: "smooth", block: "start" });
   };
 
+  // Best-effort IP geolocation, fetched once when the app loads. Used to (a)
+  // default the phone country-code selector and (b) silently record the
+  // candidate's approximate location for the recruiter's records. If it
+  // fails or is blocked, the form still works fine — phoneCountry just stays
+  // unset until the candidate picks one manually.
+  useEffect(() => {
+    let cancelled = false;
+    detectGeo().then((result) => {
+      if (!cancelled && result) setGeo(result);
+    });
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+
+  // Once geolocation resolves, default the phone country code — but only if
+  // the candidate hasn't already picked one themselves.
+  useEffect(() => {
+    if (geo.dial && !form.phoneCountry && step === "form") {
+      setForm((f) => (f.phoneCountry ? f : { ...f, phoneCountry: geo.dial }));
+    }
+  }, [geo, step]); // eslint-disable-line react-hooks/exhaustive-deps
+
   const handleSelectRole = (role) => {
     setAppId(`JAL-${Math.floor(100000 + Math.random() * 900000)}`);
     setSyncStatus("idle");
     setSelectedRoleId(role.id);
-    setForm(EMPTY_FORM);
+    setForm({ ...EMPTY_FORM, phoneCountry: geo.dial || "" });
     setFormErrors({});
     setAnswers({});
     setFiles({});
     setFileErrors({});
+    setAssessmentStarted(false);
     setStep("form");
     setTimeout(scrollTop, 50);
   };
@@ -636,7 +818,7 @@ export default function App() {
     if (syncTimerRef.current) clearTimeout(syncTimerRef.current);
     syncTimerRef.current = setTimeout(async () => {
       const ok = await postToSheet(
-        buildSheetPayload({ appId, status: "In progress", role: selectedRole, form, answers, files })
+        buildSheetPayload({ appId, status: "In progress", role: selectedRole, form, answers, files, geo })
       );
       setSyncStatus(ok ? "saved" : "offline");
     }, 1000);
@@ -662,6 +844,7 @@ export default function App() {
       form,
       answers,
       files,
+      geo,
       submittedAt: new Date(),
     };
     setSubmittedApps((prev) => [application, ...prev]);
@@ -670,7 +853,7 @@ export default function App() {
     if (syncTimerRef.current) clearTimeout(syncTimerRef.current);
     setSyncStatus("saving");
     const ok = await postToSheet(
-      buildSheetPayload({ appId: id, status: "Submitted", role: selectedRole, form, answers, files })
+      buildSheetPayload({ appId: id, status: "Submitted", role: selectedRole, form, answers, files, geo })
     );
     setSyncStatus(ok ? "saved" : "offline");
 
@@ -687,6 +870,7 @@ export default function App() {
     setAnswers({});
     setFiles({});
     setFileErrors({});
+    setAssessmentStarted(false);
     setAppId(null);
     setSyncStatus("idle");
     setTimeout(scrollTop, 50);
@@ -761,6 +945,7 @@ export default function App() {
         name: `${row.firstName || ""} ${row.lastName || ""}`.trim() || "(no name)",
         roleTitle: row.role || "—",
         statusLabel: row.status || "Unknown",
+        location: [row.city, row.country].filter(Boolean).join(", "),
         promptText: buildEvaluationPromptFromSheetRow(row),
       }))
     : submittedApps.map((app) => ({
@@ -768,10 +953,84 @@ export default function App() {
         name: `${app.form.firstName} ${app.form.lastName}`,
         roleTitle: app.role.title,
         statusLabel: "Submitted",
+        location: [app.geo?.city, app.geo?.country].filter(Boolean).join(", "),
         promptText: buildEvaluationPrompt(app),
       }));
 
   const evalApp = displayApps.find((a) => a.id === evalAppId) || null;
+
+  const completedApps = displayApps.filter((a) => a.statusLabel === "Submitted");
+  const inProgressApps = displayApps.filter((a) => a.statusLabel !== "Submitted");
+
+  function renderCandidateCard(app) {
+    return (
+      <div key={app.id}>
+        <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 bg-white/10 border border-white/15 rounded-lg px-4 py-3.5">
+          <div className="flex items-center gap-3 min-w-0">
+            <div className="w-9 h-9 rounded-md bg-white/15 flex items-center justify-center shrink-0">
+              <Briefcase size={16} className="text-white" />
+            </div>
+            <div className="min-w-0">
+              <div className="text-[14px] font-semibold text-white truncate">
+                {app.name}
+              </div>
+              <div className="text-[12.5px] text-white/70 truncate">
+                {app.roleTitle} · {app.id} ·{" "}
+                <span
+                  className={
+                    app.statusLabel === "Submitted" ? "text-[#00FFD2]" : "text-[#FFD866]"
+                  }
+                >
+                  {app.statusLabel}
+                </span>
+              </div>
+              {app.location && (
+                <div className="flex items-center gap-1 text-[12px] text-white/55 truncate mt-0.5">
+                  <MapPin size={11} /> {app.location}
+                </div>
+              )}
+            </div>
+          </div>
+          <button
+            onClick={() => {
+              setEvalAppId(evalAppId === app.id ? null : app.id);
+              setCopied(false);
+            }}
+            className="flex items-center justify-center gap-1.5 rounded-lg bg-[#00FFD2] text-[#0A1128] text-[13px] font-semibold px-4 py-2 hover:bg-white transition-colors duration-200 shrink-0"
+          >
+            <Sparkles size={14} />
+            {evalAppId === app.id ? "Hide prompt" : "Generate evaluation prompt"}
+          </button>
+        </div>
+
+        {evalAppId === app.id && (
+          <div className="mt-2 rounded-lg bg-[#031A57] border border-white/15 p-4">
+            <div className="flex items-center justify-between mb-2.5">
+              <span
+                className="text-[11px] uppercase tracking-wider text-white/60"
+                style={{ fontFamily: "'IBM Plex Mono', monospace" }}
+              >
+                Evaluation prompt — ready to copy
+              </span>
+              <button
+                onClick={() => handleCopy(app.promptText)}
+                className="flex items-center gap-1.5 text-[12.5px] font-medium text-[#00FFD2] hover:text-white transition-colors"
+              >
+                {copied ? <Check size={14} /> : <Copy size={14} />}
+                {copied ? "Copied" : "Copy"}
+              </button>
+            </div>
+            <pre
+              className="text-[12.5px] text-white/85 whitespace-pre-wrap leading-relaxed max-h-72 overflow-y-auto pr-1"
+              style={{ fontFamily: "'IBM Plex Mono', monospace" }}
+            >
+              {app.promptText}
+            </pre>
+          </div>
+        )}
+      </div>
+    );
+  }
 
   return (
     <div
@@ -946,16 +1205,52 @@ export default function App() {
 
                 <div className="grid sm:grid-cols-2 gap-4">
                   <Field label="Phone number" error={formErrors.phone}>
-                    <div className="relative">
-                      <Phone size={14} className="absolute left-3 top-1/2 -translate-y-1/2 text-[#A6ADBA]" />
-                      <input
-                        type="tel"
-                        className={inputClass(formErrors.phone) + " pl-9"}
-                        value={form.phone}
-                        onChange={(e) => setForm({ ...form, phone: e.target.value })}
-                        placeholder="+52 33 1234 5678"
-                      />
+                    <div className="flex gap-2">
+                      <select
+                        value={form.phoneCountry}
+                        onChange={(e) =>
+                          setForm({ ...form, phoneCountry: e.target.value, phoneCountryCustom: "" })
+                        }
+                        className={inputClass(formErrors.phone) + " w-[128px] shrink-0 pl-2 pr-1"}
+                      >
+                        <option value="">Code</option>
+                        {COUNTRY_CODES.map((c) => (
+                          <option key={c.iso2} value={c.dial}>
+                            {isoToFlagEmoji(c.iso2)} {c.dial}
+                          </option>
+                        ))}
+                        <option value={OTHER_COUNTRY_OPTION.dial}>
+                          {OTHER_COUNTRY_OPTION.iso2} {OTHER_COUNTRY_OPTION.name}
+                        </option>
+                      </select>
+                      <div className="relative flex-1">
+                        <Phone size={14} className="absolute left-3 top-1/2 -translate-y-1/2 text-[#A6ADBA]" />
+                        <input
+                          type="tel"
+                          inputMode="numeric"
+                          className={inputClass(formErrors.phone) + " pl-9"}
+                          value={form.phone}
+                          onChange={(e) =>
+                            setForm({ ...form, phone: e.target.value.replace(/\D/g, "").slice(0, 14) })
+                          }
+                          placeholder="3312345678"
+                        />
+                      </div>
                     </div>
+                    {form.phoneCountry === "OTHER" && (
+                      <input
+                        type="text"
+                        className={inputClass(formErrors.phone) + " mt-2"}
+                        value={form.phoneCountryCustom}
+                        onChange={(e) =>
+                          setForm({
+                            ...form,
+                            phoneCountryCustom: e.target.value.replace(/[^\d+]/g, "").slice(0, 5),
+                          })
+                        }
+                        placeholder="Enter your country code, e.g. +255"
+                      />
+                    )}
                   </Field>
                   <Field label="Email address" error={formErrors.email}>
                     <div className="relative">
@@ -1017,6 +1312,12 @@ export default function App() {
                   </Field>
                 </div>
 
+                <p className="text-[12px] text-[#8891A0] text-center">
+                  We use your approximate location (based on your connection) to help
+                  route your application to the right team — no need to enter it
+                  yourself.
+                </p>
+
                 <button
                   type="submit"
                   className="w-full flex items-center justify-center gap-1.5 rounded-lg bg-[#0053FF] text-white text-[14px] font-semibold py-3 hover:bg-[#0040CC] transition-colors duration-200"
@@ -1041,6 +1342,40 @@ export default function App() {
               <SyncBadge status={syncStatus} />
             </div>
 
+            {!assessmentStarted ? (
+              <div className="bg-white border border-[#E2E5EA] rounded-xl p-6 sm:p-9 text-center">
+                <div className="w-14 h-14 rounded-full bg-[#F0F4FF] flex items-center justify-center mx-auto mb-5">
+                  <Clock size={26} className="text-[#0053FF]" />
+                </div>
+                <h2 className="text-[20px] font-bold text-[#0A1128] mb-2">
+                  Before you begin
+                </h2>
+                <p className="text-[13px] text-[#5B6472] mb-5">
+                  {selectedRole.title} · {selectedRole.department}
+                </p>
+                <div className="rounded-lg bg-[#FFF8E6] border border-[#F5DFA0] px-5 py-4 max-w-md mx-auto text-left mb-6">
+                  <p className="text-[14px] text-[#7A5B00] leading-relaxed">
+                    <strong>
+                      This assessment takes approximately {selectedRole.estimatedMinutes}{" "}
+                      minutes
+                    </strong>{" "}
+                    to complete. Please make sure you have that time available right
+                    now — once you start, we recommend finishing it in one sitting.
+                  </p>
+                </div>
+                <p className="text-[13px] text-[#5B6472] max-w-md mx-auto mb-7">
+                  Only continue if you're ready to begin. You'll be able to save your
+                  progress as you go, but the case study and questions won't be shown
+                  until you click below.
+                </p>
+                <button
+                  onClick={() => setAssessmentStarted(true)}
+                  className="inline-flex items-center justify-center gap-1.5 rounded-lg bg-[#0053FF] text-white text-[14px] font-semibold px-6 py-3 hover:bg-[#0040CC] transition-colors duration-200"
+                >
+                  I have the time — Start the assessment <ChevronRight size={16} />
+                </button>
+              </div>
+            ) : (
             <div className="bg-white border border-[#E2E5EA] rounded-xl p-5 sm:p-7">
               <div className="flex items-center gap-2 mb-1">
                 <FileText size={16} className="text-[#0053FF]" />
@@ -1176,6 +1511,7 @@ export default function App() {
                 Submit application <ChevronRight size={16} />
               </button>
             </div>
+            )}
           </div>
         )}
 
@@ -1340,71 +1676,40 @@ export default function App() {
                       : "No applications found yet."}
                   </div>
                 ) : (
-                  <div className="space-y-3">
-                    {displayApps.map((app) => (
-                      <div key={app.id}>
-                        <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 bg-white/10 border border-white/15 rounded-lg px-4 py-3.5">
-                          <div className="flex items-center gap-3 min-w-0">
-                            <div className="w-9 h-9 rounded-md bg-white/15 flex items-center justify-center shrink-0">
-                              <Briefcase size={16} className="text-white" />
-                            </div>
-                            <div className="min-w-0">
-                              <div className="text-[14px] font-semibold text-white truncate">
-                                {app.name}
-                              </div>
-                              <div className="text-[12.5px] text-white/70 truncate">
-                                {app.roleTitle} · {app.id} ·{" "}
-                                <span
-                                  className={
-                                    app.statusLabel === "Submitted"
-                                      ? "text-[#00FFD2]"
-                                      : "text-[#FFD866]"
-                                  }
-                                >
-                                  {app.statusLabel}
-                                </span>
-                              </div>
-                            </div>
-                          </div>
-                          <button
-                            onClick={() => {
-                              setEvalAppId(evalAppId === app.id ? null : app.id);
-                              setCopied(false);
-                            }}
-                            className="flex items-center justify-center gap-1.5 rounded-lg bg-[#00FFD2] text-[#0A1128] text-[13px] font-semibold px-4 py-2 hover:bg-white transition-colors duration-200 shrink-0"
-                          >
-                            <Sparkles size={14} />
-                            {evalAppId === app.id ? "Hide prompt" : "Generate evaluation prompt"}
-                          </button>
-                        </div>
-
-                        {evalAppId === app.id && (
-                          <div className="mt-2 rounded-lg bg-[#031A57] border border-white/15 p-4">
-                            <div className="flex items-center justify-between mb-2.5">
-                              <span
-                                className="text-[11px] uppercase tracking-wider text-white/60"
-                                style={{ fontFamily: "'IBM Plex Mono', monospace" }}
-                              >
-                                Evaluation prompt — ready to copy
-                              </span>
-                              <button
-                                onClick={() => handleCopy(app.promptText)}
-                                className="flex items-center gap-1.5 text-[12.5px] font-medium text-[#00FFD2] hover:text-white transition-colors"
-                              >
-                                {copied ? <Check size={14} /> : <Copy size={14} />}
-                                {copied ? "Copied" : "Copy"}
-                              </button>
-                            </div>
-                            <pre
-                              className="text-[12.5px] text-white/85 whitespace-pre-wrap leading-relaxed max-h-72 overflow-y-auto pr-1"
-                              style={{ fontFamily: "'IBM Plex Mono', monospace" }}
-                            >
-                              {app.promptText}
-                            </pre>
-                          </div>
-                        )}
+                  <div className="space-y-8">
+                    <div>
+                      <div className="flex items-center gap-2 mb-3">
+                        <CheckCircle2 size={15} className="text-[#00FFD2]" />
+                        <h4 className="text-[13.5px] font-bold text-white uppercase tracking-wide">
+                          Completed
+                        </h4>
+                        <span className="text-[12px] text-white/60">({completedApps.length})</span>
                       </div>
-                    ))}
+                      {completedApps.length === 0 ? (
+                        <div className="rounded-lg border border-dashed border-white/20 px-4 py-5 text-center text-[13px] text-white/60">
+                          No completed applications yet.
+                        </div>
+                      ) : (
+                        <div className="space-y-3">{completedApps.map(renderCandidateCard)}</div>
+                      )}
+                    </div>
+
+                    <div>
+                      <div className="flex items-center gap-2 mb-3">
+                        <Clock size={15} className="text-[#FFD866]" />
+                        <h4 className="text-[13.5px] font-bold text-white uppercase tracking-wide">
+                          In progress
+                        </h4>
+                        <span className="text-[12px] text-white/60">({inProgressApps.length})</span>
+                      </div>
+                      {inProgressApps.length === 0 ? (
+                        <div className="rounded-lg border border-dashed border-white/20 px-4 py-5 text-center text-[13px] text-white/60">
+                          Nobody currently mid-application.
+                        </div>
+                      ) : (
+                        <div className="space-y-3">{inProgressApps.map(renderCandidateCard)}</div>
+                      )}
+                    </div>
                   </div>
                 )}
               </>
