@@ -134,6 +134,70 @@ const ROLES = [
     caseStudy: LEGAL_DRAFTING_CASE_STUDY,
     questions: LEGAL_DRAFTING_QUESTIONS,
   },
+  {
+    id: "client-success-analyst",
+    title: "Client Success Analyst",
+    department: "Customer Service",
+    location: "Remote",
+    commitment: "Full-time",
+    estimatedMinutes: 15,
+    blurb:
+      "Serve as the firm's first point of contact for clients and prospects — managing phone lines and CRM records, following up on immigration and civil cases, and keeping client satisfaction on track across the group's affiliated firms.",
+    requirements: [
+      "English proficiency: Intermediate to Advanced",
+      "Excellent verbal and written communication skills",
+      "Strong organization and attention to detail",
+      "Experience in customer service, preferably in the legal sector",
+      "Comfortable with CRMs and digital tools",
+      "Able to work remotely and autonomously",
+    ],
+    questions: [
+      {
+        id: "q1",
+        rows: 6,
+        prompt:
+          "A client calls upset because they haven't received an update on their case status in two weeks, and their court hearing is coming up soon. Write the brief, empathetic response you would give them on the call, and describe what you would do afterward to follow up.",
+      },
+      {
+        id: "q2",
+        rows: 6,
+        prompt:
+          "It's Friday afternoon and you need to send your weekly call-quality report to your supervisor, but a client's Google review just came in with a 2-star rating. How do you prioritize these two tasks, and what would you say in your response to the client's review?",
+      },
+    ],
+  },
+  {
+    id: "community-manager",
+    title: "Community Manager",
+    department: "Marketing & Communications",
+    location: "Remote",
+    commitment: "Full-time",
+    estimatedMinutes: 20,
+    blurb:
+      "Design, execute, and oversee the digital and online communication strategy across the group's four brands — social media, video and podcast production, email campaigns, and online reputation, working closely with attorneys and the marketing team.",
+    requirements: [
+      "2+ years of experience in social media management or digital marketing, preferably at a professional or legal services firm",
+      "Degree in Communications, Digital Marketing, Advertising, or a related field",
+      "Experience with video editing and podcast production",
+      "Comfortable with tools like Meta Business, Hootsuite, Canva, HubSpot, or similar, plus CRM platforms",
+      "Advanced English (professional reading and writing)",
+      "Strong writing, strategic thinking, and client orientation",
+    ],
+    questions: [
+      {
+        id: "q1",
+        rows: 6,
+        prompt:
+          "One of the firm's LinkedIn posts just received a negative public comment from a former client criticizing the firm's service. Draft the response you would post publicly, and briefly describe any follow-up you'd do outside of the comment thread.",
+      },
+      {
+        id: "q2",
+        rows: 6,
+        prompt:
+          "You have three deliverables due this week: editing this week's podcast episode, drafting a bilingual (English/Spanish) email campaign for a client-acquisition push, and preparing the monthly KPI report. How would you prioritize these, and what would you communicate to the team about your plan?",
+      },
+    ],
+  },
 ];
 
 const EXHIBITS = [
@@ -491,6 +555,29 @@ async function fetchApplicationsFromSheet() {
   }
 }
 
+/**
+ * Fetches a single candidate's own saved progress by applicationId — used
+ * to restore an in-progress application when someone clicks the "resume"
+ * link from a reminder email. Deliberately doesn't require the recruiter
+ * key: the applicationId itself (unguessable, sent only to that candidate)
+ * is what authorizes this read, and it only ever returns that one record.
+ */
+async function fetchResumeApplication(applicationId) {
+  if (!GOOGLE_SHEETS_ENDPOINT || GOOGLE_SHEETS_ENDPOINT.includes("PASTE_YOUR") || !applicationId) {
+    return { ok: false };
+  }
+  try {
+    const url = `${GOOGLE_SHEETS_ENDPOINT}?resumeId=${encodeURIComponent(applicationId)}`;
+    const res = await fetch(url, { method: "GET" });
+    if (!res.ok) return { ok: false };
+    const data = await res.json();
+    if (!data.ok || !data.application) return { ok: false };
+    return { ok: true, application: data.application };
+  } catch {
+    return { ok: false };
+  }
+}
+
 function buildEvaluationPromptFromSheetRow(row) {
   const roleDef = ROLES.find((r) => r.title === row.role);
   const caseStudyBlock = roleDef?.caseStudy
@@ -706,6 +793,7 @@ export default function App() {
 
   const [geo, setGeo] = useState({ dial: "", iso2: "", country: "", city: "" });
   const [assessmentStarted, setAssessmentStarted] = useState(false);
+  const [resumeBanner, setResumeBanner] = useState(null); // null | "restored" | "not_found"
 
   const selectedRole = useMemo(
     () => ROLES.find((r) => r.id === selectedRoleId) || null,
@@ -715,6 +803,56 @@ export default function App() {
   const scrollTop = () => {
     if (topRef.current) topRef.current.scrollIntoView({ behavior: "smooth", block: "start" });
   };
+
+  // If the page loads with ?resume=APPID (the link inside a reminder
+  // email), pull that candidate's own saved progress back from the Sheet
+  // and drop them right back where they left off.
+  useEffect(() => {
+    const resumeId = new URLSearchParams(window.location.search).get("resume");
+    if (!resumeId) return;
+
+    fetchResumeApplication(resumeId).then((result) => {
+      const roleDef = result.ok ? ROLES.find((r) => r.title === result.application.role) : null;
+      if (!result.ok || !roleDef) {
+        setResumeBanner("not_found");
+        return;
+      }
+
+      const app = result.application;
+      let restoredAnswers = {};
+      try {
+        restoredAnswers = JSON.parse(app.answersJson || "{}");
+      } catch {
+        restoredAnswers = {};
+      }
+      const hasAnyAnswer = Object.values(restoredAnswers).some(
+        (v) => (v || "").toString().trim().length > 0
+      );
+      const [dial, ...rest] = String(app.phone || "").trim().split(" ");
+
+      setAppId(app.applicationId);
+      setSelectedRoleId(roleDef.id);
+      setForm({
+        firstName: app.firstName || "",
+        lastName: app.lastName || "",
+        phoneCountry: dial || "",
+        phoneCountryCustom: "",
+        phone: rest.join(" ") || "",
+        email: app.email || "",
+        englishLevel: app.englishLevel || "",
+        aiExperience: app.aiExperience || "",
+        remoteAvailable: app.remoteAvailability || "",
+        ownDevice: app.ownDevice || "",
+      });
+      setAnswers(restoredAnswers);
+      setAssessmentStarted(hasAnyAnswer);
+      setStep(hasAnyAnswer ? "assessment" : "form");
+      setSyncStatus("saved");
+      setResumeBanner("restored");
+      setTimeout(scrollTop, 50);
+    });
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
 
   // Best-effort IP geolocation, fetched once when the app loads. Used to (a)
   // default the phone country-code selector and (b) silently record the
@@ -946,6 +1084,7 @@ export default function App() {
         roleTitle: row.role || "—",
         statusLabel: row.status || "Unknown",
         location: [row.city, row.country].filter(Boolean).join(", "),
+        reminderSentAt: row.reminderSentAt || null,
         promptText: buildEvaluationPromptFromSheetRow(row),
       }))
     : submittedApps.map((app) => ({
@@ -954,6 +1093,7 @@ export default function App() {
         roleTitle: app.role.title,
         statusLabel: "Submitted",
         location: [app.geo?.city, app.geo?.country].filter(Boolean).join(", "),
+        reminderSentAt: null,
         promptText: buildEvaluationPrompt(app),
       }));
 
@@ -987,6 +1127,11 @@ export default function App() {
               {app.location && (
                 <div className="flex items-center gap-1 text-[12px] text-white/55 truncate mt-0.5">
                   <MapPin size={11} /> {app.location}
+                </div>
+              )}
+              {app.statusLabel === "In progress" && app.reminderSentAt && (
+                <div className="flex items-center gap-1 text-[12px] text-[#00FFD2]/80 truncate mt-0.5">
+                  <Mail size={11} /> Reminder sent {new Date(app.reminderSentAt).toLocaleDateString()}
                 </div>
               )}
             </div>
@@ -1047,6 +1192,21 @@ export default function App() {
       `}</style>
 
       <div ref={topRef} />
+
+      {resumeBanner === "restored" && (
+        <div className="bg-[#00FF6C] text-[#0A1128]">
+          <div className="max-w-5xl mx-auto px-5 sm:px-8 py-2.5 text-[13px] font-medium flex items-center gap-2">
+            <CheckCircle2 size={15} /> Welcome back! We've restored your progress — pick up right where you left off.
+          </div>
+        </div>
+      )}
+      {resumeBanner === "not_found" && (
+        <div className="bg-[#FFF3CD] text-[#7A5B00]">
+          <div className="max-w-5xl mx-auto px-5 sm:px-8 py-2.5 text-[13px] font-medium flex items-center gap-2">
+            <AlertCircle size={15} /> We couldn't find that saved application — no worries, just select your role below to start fresh.
+          </div>
+        </div>
+      )}
 
       {/* ---------------- HEADER ---------------- */}
       <header className="bg-[#E4E8F0] border-b-[3px] border-[#0053FF]">
