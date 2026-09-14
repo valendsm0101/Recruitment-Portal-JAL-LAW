@@ -87,35 +87,6 @@ const ROLES = [
     questions: LEGAL_DRAFTING_QUESTIONS,
   },
   {
-    id: "admin-assistant",
-    title: "Administrative Assistant",
-    department: "Firm Operations",
-    location: "Remote",
-    commitment: "Full-time",
-    estimatedMinutes: 15,
-    blurb:
-      "Represent the firm with excellence and provide key support for daily operations — logistics coordination, administrative management, and corporate hospitality.",
-    requirements: [
-      "2+ years in a similar role, preferably at a law firm or professional office",
-      "Fluent English and Spanish, spoken and written",
-      "Advanced Microsoft Workspace and digital switchboard system experience",
-      "Strong organizational and communication skills",
-      "Availability to work remotely",
-    ],
-    questions: [
-      {
-        id: "q1",
-        prompt:
-          "Draft a short, professional email rescheduling a client's consultation because the attorney has a scheduling conflict. Keep the tone warm but firm.",
-      },
-      {
-        id: "q2",
-        prompt:
-          "It's 4:45 PM and three requests arrive at once: a partner needs a document printed for a 5:00 PM meeting, a client calls asking to reschedule, and IT needs five minutes to fix your calendar sync. How do you triage these, and in what order?",
-      },
-    ],
-  },
-  {
     id: "legal-intern",
     title: "Legal Intern",
     department: "Immigration Case Management",
@@ -218,6 +189,9 @@ const EMPTY_FORM = {
   aiExperience: "",
   remoteAvailable: "",
   ownDevice: "",
+  salaryMin: "",
+  salaryMax: "",
+  hasUsdAccount: "",
 };
 
 /* ------------------------------------------------------------------ */
@@ -398,6 +372,13 @@ function validateForm(form) {
   if (!form.aiExperience) errors.aiExperience = "Select an AI experience level.";
   if (!form.remoteAvailable) errors.remoteAvailable = "Please select an option.";
   if (!form.ownDevice) errors.ownDevice = "Please select an option.";
+  if (!form.salaryMin.trim() || !form.salaryMax.trim()) {
+    errors.salary = "Enter your expected salary range in USD.";
+  } else if (!/^\d+$/.test(form.salaryMin.trim()) || !/^\d+$/.test(form.salaryMax.trim())) {
+    errors.salary = "Use numbers only (USD, no symbols or letters).";
+  } else if (Number(form.salaryMin) > Number(form.salaryMax)) {
+    errors.salary = "Minimum can't be greater than maximum.";
+  }
   return errors;
 }
 
@@ -432,6 +413,8 @@ ${locationLine}- Self-reported English proficiency: ${form.englishLevel}
 - Self-reported AI tool experience: ${form.aiExperience}
 - Remote work availability: ${form.remoteAvailable}
 - Owns a personal laptop/computer: ${form.ownDevice}
+- Expected salary range (USD): $${form.salaryMin} - $${form.salaryMax}
+- Has a bank account in USD: ${form.hasUsdAccount}
 
 ROLE APPLIED FOR
 ${role.title} — ${role.department} (${role.location}, ${role.commitment})
@@ -509,6 +492,9 @@ function buildSheetPayload({ appId, status, role, form, answers, files, geo }) {
     aiExperience: form.aiExperience,
     remoteAvailable: form.remoteAvailable,
     ownDevice: form.ownDevice,
+    salaryMin: form.salaryMin,
+    salaryMax: form.salaryMax,
+    hasUsdAccount: form.hasUsdAccount,
     answersText,
     answersJson: JSON.stringify(answers),
     clientTimestamp: new Date().toISOString(),
@@ -599,6 +585,8 @@ ${locationLine}- Self-reported English proficiency: ${row.englishLevel}
 - Self-reported AI tool experience: ${row.aiExperience}
 - Remote work availability: ${row.remoteAvailability}
 - Owns a personal laptop/computer: ${row.ownDevice}
+- Expected salary range (USD): $${row.salaryMin || "?"} - $${row.salaryMax || "?"}
+- Has a bank account in USD: ${row.hasUsdAccount || "not specified"}
 
 ROLE APPLIED FOR
 ${row.role} — ${row.department}
@@ -1468,6 +1456,50 @@ export default function App() {
                       value={form.ownDevice}
                       onChange={(v) => setForm({ ...form, ownDevice: v })}
                       error={formErrors.ownDevice}
+                    />
+                  </Field>
+                </div>
+
+                <div className="grid sm:grid-cols-2 gap-4">
+                  <Field label="Salary expectation (USD)" error={formErrors.salary}>
+                    <div className="flex items-center gap-2">
+                      <div className="relative flex-1">
+                        <span className="absolute left-3 top-1/2 -translate-y-1/2 text-[#A6ADBA] text-[14px]">$</span>
+                        <input
+                          type="text"
+                          inputMode="numeric"
+                          className={inputClass(formErrors.salary) + " pl-6"}
+                          value={form.salaryMin}
+                          onChange={(e) =>
+                            setForm({ ...form, salaryMin: e.target.value.replace(/\D/g, "").slice(0, 7) })
+                          }
+                          placeholder="Min"
+                        />
+                      </div>
+                      <span className="text-[#A6ADBA] text-[13px]">to</span>
+                      <div className="relative flex-1">
+                        <span className="absolute left-3 top-1/2 -translate-y-1/2 text-[#A6ADBA] text-[14px]">$</span>
+                        <input
+                          type="text"
+                          inputMode="numeric"
+                          className={inputClass(formErrors.salary) + " pl-6"}
+                          value={form.salaryMax}
+                          onChange={(e) =>
+                            setForm({ ...form, salaryMax: e.target.value.replace(/\D/g, "").slice(0, 7) })
+                          }
+                          placeholder="Max"
+                        />
+                      </div>
+                    </div>
+                    <span className="mt-1 block text-[11.5px] text-[#8891A0]">
+                      Monthly range, in US dollars — numbers only.
+                    </span>
+                  </Field>
+                  <Field label="Do you have a bank account in USD? (optional)" error={formErrors.hasUsdAccount}>
+                    <YesNoToggle
+                      value={form.hasUsdAccount}
+                      onChange={(v) => setForm({ ...form, hasUsdAccount: v })}
+                      error={formErrors.hasUsdAccount}
                     />
                   </Field>
                 </div>
