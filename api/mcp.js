@@ -226,6 +226,22 @@ function buildServer() {
 }
 
 export default async function handler(req, res) {
+  // Browser-based MCP clients (like a web AI assistant calling this URL
+  // directly from the page you're using) send a CORS "preflight" OPTIONS
+  // request before the real one, and expect these headers on every
+  // response — without them, the browser blocks the request entirely and
+  // just shows a generic "couldn't connect" error.
+  res.setHeader("Access-Control-Allow-Origin", "*");
+  res.setHeader("Access-Control-Allow-Methods", "POST, GET, OPTIONS");
+  res.setHeader("Access-Control-Allow-Headers", "Content-Type, Authorization, Mcp-Session-Id");
+  res.setHeader("Access-Control-Expose-Headers", "Mcp-Session-Id");
+
+  if (req.method === "OPTIONS") {
+    res.statusCode = 204;
+    res.end();
+    return;
+  }
+
   const sharedSecret = process.env.MCP_SHARED_SECRET;
   const providedKey = req.query?.key;
 
